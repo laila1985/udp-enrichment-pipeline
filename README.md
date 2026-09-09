@@ -1,8 +1,8 @@
-# Servuce Analytics Engine
+# Service  Engine
 
 > **Agentic AI SIEM Platform** — ingests security telemetry, investigates it with AI agents, and reports findings to SOC analysts.
 
-The **Service Analytics Engine** is a Spring Boot application that ingests UDP security telemetry (syslog/NetFlow), normalizes it into a common schema, and routes it through specialized AI agents powered by **Ollama (`deepseek-r1`)**. Normalized events are published to **Kafka**, while analyst sessions and RBAC permissions are cached in **Redis**.
+The **Service SIEM Engine** is a Spring Boot application that ingests UDP security telemetry (syslog/NetFlow), normalizes it into a common schema, and routes it through specialized AI agents powered by **Ollama (`deepseek-r1`)**. Normalized events are published to **Kafka**, while analyst sessions and RBAC permissions are cached in **Redis**.
 
 Built on **Hexagonal (Ports & Adapters) + Clean Architecture**, the platform keeps business logic framework-agnostic and infrastructure swappable.
 
