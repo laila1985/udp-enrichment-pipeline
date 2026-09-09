@@ -2,7 +2,7 @@
 
 ## 1. Overview
 
-The **Servuce Analytics Engine** is an **agentic AI SIEM platform** built on Spring Boot. It ingests UDP security telemetry (syslog/NetFlow), processes it through specialized AI agents powered by **Ollama (`deepseek-r1`)**, publishes normalized events to **Kafka**, and caches analyst sessions and access permissions in **Redis**.
+The **Service Analytics Engine** is an **agentic AI SIEM platform** built on Spring Boot. It ingests UDP security telemetry (syslog/NetFlow), processes it through specialized AI agents powered by **Ollama (`deepseek-r1`)**, publishes normalized events to **Kafka**, and caches analyst sessions and access permissions in **Redis**.
 
 The system follows **Hexagonal (Ports & Adapters) + Clean Architecture** with strict dependency rules, making business logic fully testable and infrastructure swappable.
 
@@ -25,8 +25,8 @@ A firewall emits syslog messages over UDP whenever it blocks a connection. The p
 │  - model: SecurityEvent, ThreatFinding, AgentTask,          │
 │           AgentResult                                       │
 │  - agent: Agent, Tool (interfaces)                          │
-│  - port: MessagePublisher, SessionStore, PermissionStore,  │
-│          LlmClient, ToolExecutor                            │
+│  - port: MessagePublisher, SessionStore, PermissionStore,   │
+│           LlmClient, ToolExecutor                            │
 └──────────────────────────┬──────────────────────────────────┘
                            │ (implements ports)
 ┌──────────────────────────▼──────────────────────────────────┐
