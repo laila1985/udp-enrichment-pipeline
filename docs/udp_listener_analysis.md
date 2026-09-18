@@ -1,36 +1,52 @@
-Here are the differences between the three UDP listeners in your project. All three extend `AbstractUdpListener` and receive syslog messages over UDP, but they use different underlying I/O approaches:
+# UDP Listener Comparison
+
+The platform can ingest UDP datagrams using one of three pluggable `UdpListener`
+implementations. All three share the same `UdpMessageHandler` (parse + normalize) and are
+selected at startup via the `udp.listener.mode` property (`simple`, `nio`, or `netty`):
+
+```yaml
+udp:
+  port: 514
+  buffer-size: 2048
+  listener:
+    mode: nio   # simple | nio | netty
+```
 
 ## 1. SimpleUdpListener (Blocking I/O — `java.net`)
+
 - Uses the classic `java.net.DatagramSocket` + `DatagramPacket` API.
-- **Blocking** receive loop: `serverSocket.receive(receivePacket)` blocks the thread until a packet arrives.
-- Runs on a single thread (the listener thread itself).
-- Simplest implementation, easy to understand, but one thread handles everything sequentially.
-- Buffer: fixed `byte[2048]`.
+- **Blocking** receive loop: `socket.receive(packet)` blocks until a packet arrives.
+- Single receive thread handles everything sequentially.
+- Simplest to understand; best for low-throughput or resource-constrained deployments.
+- Buffer: configurable via `udp.buffer-size`.
 
 ## 2. NioUdpListener (Non-blocking I/O — `java.nio`)
+
 - Uses `java.nio.channels.DatagramChannel` with `ByteBuffer`.
-- The channel is **not** configured as non-blocking (the `configureBlocking(true)` line is commented out), so `channel.receive(buffer)` actually blocks too — but the code is written to handle a `null` return (non-blocking style) with a commented-out `Thread.sleep(50)` to reduce CPU usage.
-- Uses `StandardSocketOptions.SO_RCVBUF` to set the receive buffer.
-- More modern NIO API, gives finer control over buffers and socket options, and is the foundation for scalable non-blocking designs (though here it's effectively blocking).
-- Buffer: `ByteBuffer.allocate(2048)`.
+- `configureBlocking(false)` with a single poll loop; handles the `null` return.
+- Uses `StandardSocketOptions.SO_REUSEADDR`.
+- Modern NIO API with fine control over buffers/options; no extra dependencies. **Default.**
 
 ## 3. NettyUdpListener (Event-driven framework — Netty)
-- Uses the **Netty** framework (`Bootstrap`, `NioEventLoopGroup`, `NioDatagramChannel`).
-- **Event-driven / asynchronous**: instead of a manual receive loop, you register a `ChannelInitializer` and add the `syslogHandler` to the pipeline. Netty's event loop threads handle incoming packets and invoke the handler.
-- Uses an `EventLoopGroup` (default 16 threads — noted in a TODO) for concurrency, so it can scale across multiple threads.
-- Supports `SO_BROADCAST` and `SO_RCVBUF` via `ChannelOption`.
-- Most scalable and production-ready, but heaviest in terms of dependencies and complexity.
+
+- Uses `Bootstrap` + `NioEventLoopGroup` + `NioDatagramChannel`.
+- **Event-driven / asynchronous**: a `SimpleChannelInboundHandler<DatagramPacket>` forwards
+  each packet to `UdpMessageHandler` on an event-loop thread.
+- Multi-threaded (event-loop group), so it scales across threads for high throughput.
+- Supports `SO_BROADCAST` and a 25 MB `SO_RCVBUF`.
 
 ## Summary Table
 
-| Aspect      | Simple             | NIO                     | Netty                 |
-|-------------|--------------------|-------------------------|-----------------------|
-| API         | `java.net`         | `java.nio`              | Netty framework       |
-| Model       | Blocking           | Blocking (NIO API)      | Event-driven / async  |
-| Threads     | 1                  | 1                       | Event loop group (16) |
-| Concurrency | None               | None                    | Multi-threaded        |
-| Complexity  | Lowest             | Medium                  | Highest               |
-| Scalability | Low                | Medium                  | High                  |
+| Aspect      | Simple              | NIO                      | Netty                 |
+|-------------|---------------------|--------------------------|-----------------------|
+| API         | `java.net`          | `java.nio`               | Netty framework       |
+| Model       | Blocking            | Non-blocking (NIO API)   | Event-driven / async  |
+| Threads     | 1                   | 1                        | Event-loop group      |
+| Concurrency | None                | None                     | Multi-threaded        |
+| Complexity  | Lowest              | Medium                   | Highest               |
+| Scalability | Low                 | Medium                   | High                  |
 
-**Key takeaway:** Simple and NIO are both effectively single-threaded blocking loops (NIO just uses the newer channel API), 
-while Netty is a fully asynchronous, multi-threaded event-driven implementation that can handle much higher throughput.
+**Key takeaway:** `simple` and `nio` are single-threaded loops (NIO uses the newer channel
+API), while `netty` is a fully asynchronous, multi-threaded event-driven implementation that
+can handle much higher throughput. Choose the mode that best matches your deployment's
+throughput and complexity requirements via `UDP_LISTENER_MODE`.

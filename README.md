@@ -1,8 +1,8 @@
-# Service  Engine
+# UDP Enrichment Pipeline
 
 > **Agentic AI SIEM Platform** — ingests security telemetry, investigates it with AI agents, and reports findings to SOC analysts.
 
-The **Service SIEM Engine** is a Spring Boot application that ingests UDP security telemetry (syslog/NetFlow), normalizes it into a common schema, and routes it through specialized AI agents powered by **Ollama (`deepseek-r1`)**. Normalized events are published to **Kafka**, while analyst sessions and RBAC permissions are cached in **Redis**.
+The **UDP Enrichment Pipeline** is a Spring Boot application that ingests UDP security telemetry (syslog/NetFlow), normalizes it into a common schema, and routes it through specialized AI agents powered by **Ollama (`deepseek-r1`)**. Normalized events are published to **Kafka**, while analyst sessions and RBAC permissions are cached in **Redis**.
 
 Built on **Hexagonal (Ports & Adapters) + Clean Architecture**, the platform keeps business logic framework-agnostic and infrastructure swappable.
 
@@ -18,6 +18,7 @@ Built on **Hexagonal (Ports & Adapters) + Clean Architecture**, the platform kee
 - [Configuration](#configuration)
 - [Project Structure](#project-structure)
 - [How It Works](#how-it-works)
+- [REST API](#rest-api)
 - [Testing](#testing)
 - [Roadmap](#roadmap)
 
@@ -25,7 +26,7 @@ Built on **Hexagonal (Ports & Adapters) + Clean Architecture**, the platform kee
 
 ## Features
 
-- **UDP ingestion** — high-throughput syslog/NetFlow datagram intake.
+- **UDP ingestion** — high-throughput syslog/NetFlow datagram intake, with a **pluggable listener** (Simple / NIO / Netty) selected at runtime.
 - **Event normalization** — raw telemetry mapped to a unified `SecurityEvent` model.
 - **Agentic AI pipeline** — orchestrator routes tasks to specialized agents.
 - **LLM-powered analysis** — `deepseek-r1` via Ollama with a tool-calling loop.
@@ -55,18 +56,18 @@ The system follows **Hexagonal (Ports & Adapters) + Clean Architecture**:
 │  APPLICATION (use cases, orchestration)                     │
 │  - agent: OrchestratorAgent, IngestionAgent, AnalysisAgent, │
 │           ReportingAgent                                    │
-│  - service: MessageProcessingService, SessionService,       │
-│             PermissionService                               │
+│  - service: SessionService, PermissionService               │
 └──────────────────────────┬──────────────────────────────────┘
                            │ (adapters)
 ┌──────────────────────────▼──────────────────────────────────┐
 │  INFRASTRUCTURE (adapters + config)                         │
-│  - udp: UdpServer, UdpMessageHandler                        │
-│  - kafka: KafkaMessagePublisher                             │
+│  - udp: UdpListener (Simple/Nio/Netty), UdpMessageHandler  │
+│  - kafka: KafkaMessagePublisher, EventAnalysisConsumer      │
 │  - redis: RedisSessionStore, RedisPermissionStore           │
 │  - ollama: OllamaLlmClient                                  │
 │  - tool: ToolRegistry, IpReputationTool, GeoIpTool          │
-│  - config: KafkaConfig, ApplicationConfig                   │
+│  - web: SessionController, PermissionController             │
+│  - config: KafkaConfig, ApplicationConfig, ResilienceConfig│
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -78,7 +79,8 @@ The system follows **Hexagonal (Ports & Adapters) + Clean Architecture**:
 
 Business logic never imports Kafka, Redis, or Ollama classes directly — it depends on **ports** (interfaces). Swapping Kafka for RabbitMQ, or Ollama for OpenAI, is a one-class change in the infrastructure layer.
 
-For a deeper dive, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+For a deeper dive, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and the
+[`docs/udp_listener_analysis.md`](docs/udp_listener_analysis.md) listener comparison.
 
 ---
 
@@ -86,7 +88,7 @@ For a deeper dive, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 | Layer | Technology |
 |-------|-----------|
-| Language | Java 17 |
+| Language | Java 21 |
 | Framework | Spring Boot 3.3.x |
 | Build | Gradle |
 | LLM | Ollama (`deepseek-r1`) |
@@ -100,7 +102,7 @@ For a deeper dive, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Prerequisites
 
-- **Java 17** or later
+- **Java 21** or later
 - **Docker** & **Docker Compose** (for Kafka, Redis, Ollama)
 - **Gradle** (wrapper included — no global install needed)
 
@@ -130,7 +132,7 @@ docker exec -it <ollama-container> ollama pull deepseek-r1
 ./gradlew bootRun
 ```
 
-The engine starts listening for UDP datagrams on port `8080` (configurable).
+The engine starts listening for UDP datagrams on port `514` (configurable via `UDP_PORT`). The listener implementation is chosen via `UDP_LISTENER_MODE` (`simple` | `nio` | `netty`, default `nio`).
 
 ### 4. Verify
 
@@ -146,12 +148,15 @@ All settings live in [`src/main/resources/application.yml`](src/main/resources/a
 
 | Property | Env var | Default |
 |----------|---------|---------|
-| `udp.port` | `UDP_PORT` | `8080` |
+| `server.port` | `SERVER_PORT` | `8080` |
+| `udp.port` | `UDP_PORT` | `514` |
+| `udp.listener.mode` | `UDP_LISTENER_MODE` | `nio` |
 | `udp.buffer-size` | — | `2048` |
 | `ollama.base-url` | `OLLAMA_BASE_URL` | `http://localhost:11434` |
 | `ollama.model` | `OLLAMA_MODEL` | `deepseek-r1` |
 | `kafka.bootstrap-servers` | `KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` |
 | `kafka.topic` | `KAFKA_TOPIC` | `analytics-events` |
+| `kafka.consumer-group` | `KAFKA_CONSUMER_GROUP` | `analytics-engine` |
 | `spring.data.redis.host` | `REDIS_HOST` | `localhost` |
 | `spring.data.redis.port` | `REDIS_PORT` | `6379` |
 
@@ -160,22 +165,24 @@ All settings live in [`src/main/resources/application.yml`](src/main/resources/a
 ## Project Structure
 
 ```
-src/main/java/com/servuce/analytics/
-├── ServuceAnalyticsEngineApplication.java   # Entry point
+src/main/java/com/service/analytics/
+├── ServiceAnalyticsEngineApplication.java   # Entry point
 ├── domain/                                  # Pure business logic (no framework deps)
 │   ├── model/                               # SecurityEvent, ThreatFinding, AgentTask, AgentResult
 │   ├── agent/                               # Agent, Tool interfaces
 │   └── port/                                # MessagePublisher, SessionStore, PermissionStore, LlmClient, ToolExecutor
 ├── application/                             # Use cases & orchestration
 │   ├── agent/                               # OrchestratorAgent, IngestionAgent, AnalysisAgent, ReportingAgent
-│   └── service/                             # MessageProcessingService, SessionService, PermissionService
+│   └── service/                             # SessionService, PermissionService
 └── infrastructure/                          # Adapters & configuration
-    ├── udp/                                 # UdpServer, UdpMessageHandler
-    ├── kafka/                               # KafkaMessagePublisher
+    ├── udp/                                 # UdpMessageHandler
+    │   └── listener/                        # UdpListener, SimpleUdpListener, NioUdpListener, NettyUdpListener
+    ├── kafka/                               # KafkaMessagePublisher, EventAnalysisConsumer
     ├── redis/                               # RedisSessionStore, RedisPermissionStore
     ├── ollama/                              # OllamaLlmClient
     ├── tool/                                # ToolRegistry, IpReputationTool, GeoIpTool
-    └── config/                              # KafkaConfig, ApplicationConfig
+    ├── web/                                 # SessionController, PermissionController
+    └── config/                              # KafkaConfig, ApplicationConfig, ResilienceConfig, UdpListenerConfig
 ```
 
 ---
@@ -185,7 +192,7 @@ src/main/java/com/servuce/analytics/
 ### Data Flow
 
 ```
-[UDP Sender] ──UDP:8080──▶ UdpServer ──▶ UdpMessageHandler
+[UDP Sender] ──UDP:514──▶ UdpListener (simple|nio|netty) ──▶ UdpMessageHandler
                                               │ parse + normalize
                                               ▼
                                      SecurityEvent
@@ -194,7 +201,10 @@ src/main/java/com/servuce/analytics/
                               MessagePublisher (Kafka: analytics-events)
                                               │
                                               ▼
-                                   OrchestratorAgent
+                                   EventAnalysisConsumer
+                                              │
+                                              ▼
+                                    OrchestratorAgent
                                      │ route by type
               ┌───────────────────────┼───────────────────────┐
               ▼                       ▼                       ▼
@@ -235,6 +245,32 @@ src/main/java/com/servuce/analytics/
 
 Tools implement the `Tool` interface and are auto-registered in `ToolRegistry` via Spring's `List<Tool>` injection.
 
+### Pluggable UDP Listener
+
+The ingestion endpoint uses the `UdpListener` interface with three swappable implementations,
+selected via `udp.listener.mode`:
+
+| Mode | Class | I/O model |
+|------|-------|-----------|
+| `simple` | `SimpleUdpListener` | Blocking `java.net` |
+| `nio` (default) | `NioUdpListener` | Non-blocking `java.nio` |
+| `netty` | `NettyUdpListener` | Event-driven Netty |
+
+See [`docs/udp_listener_analysis.md`](docs/udp_listener_analysis.md) for a detailed comparison.
+
+---
+
+## REST API
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/sessions/{sessionId}` | `POST` | Create/update an analyst session (body: `data`, `ttlSeconds`). |
+| `/api/sessions/{sessionId}` | `GET` | Retrieve an analyst session. |
+| `/api/sessions/{sessionId}` | `DELETE` | End an analyst session. |
+| `/api/permissions/{userId}` | `POST` | Grant a permission (body: `permission`). |
+| `/api/permissions/{userId}` | `DELETE` | Revoke a permission (body: `permission`). |
+| `/api/permissions/{userId}/{permission}` | `GET` | Check if a permission is granted (returns `{"granted": true/false}`). |
+
 ---
 
 ## Testing
@@ -264,4 +300,4 @@ The hexagonal boundaries make this split mechanical: each module already depends
 
 ## License
 
-Proprietary — © Servuce. All rights reserved.
+Proprietary — © Service. All rights reserved.

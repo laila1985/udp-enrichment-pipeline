@@ -1,14 +1,19 @@
 spring:
   application:
-    name: servuce-analytics-engine
+    name: udp-enrichment-pipeline
   data:
     redis:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
 
+server:
+  port: ${SERVER_PORT:8080}
+
 udp:
-  port: ${UDP_PORT:8080}
+  port: ${UDP_PORT:514}
   buffer-size: 2048
+  listener:
+    mode: ${UDP_LISTENER_MODE:nio}
 
 ollama:
   base-url: ${OLLAMA_BASE_URL:http://localhost:11434}
@@ -17,6 +22,7 @@ ollama:
 kafka:
   bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
   topic: ${KAFKA_TOPIC:analytics-events}
+  consumer-group: ${KAFKA_CONSUMER_GROUP:analytics-engine}
 
 management:
   endpoints:
@@ -26,4 +32,4 @@ management:
 
 logging:
   level:
-    com.servuce.analytics: INFO
+    com.service.analytics: INFO
